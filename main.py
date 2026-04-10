@@ -1,6 +1,6 @@
 """
 main.py — AI Prompt Analysis Pipeline (Prompt-Driven Edition)
-Alur: USER_PROMPT (env var) → Gemini 1.5 Pro (Analisis) → Groq LLaMA3-70B (Humanize) → Simpan .md
+Alur: USER_PROMPT (env var) → gemini-1.5-flash (Analisis) → Groq LLaMA3-70B (Humanize) → Simpan .md
 """
 
 import os
@@ -58,8 +58,8 @@ USER_PROMPT = get_env("USER_PROMPT", required=False) or DEFAULT_PROMPT
 try:
     import google.generativeai as genai
     genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel("gemini-1.5-pro")
-    log.info("Gemini SDK berhasil diinisialisasi (model: gemini-1.5-pro).")
+    gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+    log.info("Gemini SDK berhasil diinisialisasi (model: gemini-1.5-flash).")
 except ImportError:
     log.error("Library 'google-generativeai' tidak terinstall.")
     sys.exit(1)
@@ -92,10 +92,10 @@ Instruksi:
 
 def analyze_with_gemini(user_prompt: str) -> str:
     """
-    Mengirimkan user_prompt ke Gemini 1.5 Pro untuk dianalisis secara mendalam.
+    Mengirimkan user_prompt ke gemini-1.5-flash untuk dianalisis secara mendalam.
     Mengembalikan teks hasil analisis, atau pesan error jika gagal.
     """
-    log.info(f"Mengirim prompt ke Gemini 1.5 Pro...")
+    log.info(f"Mengirim prompt ke gemini-1.5-flash...")
     log.info(f"Prompt preview: \"{user_prompt[:80]}...\"")
 
     full_prompt = GEMINI_USER_PROMPT_TEMPLATE.format(date=TODAY, user_prompt=user_prompt)
@@ -284,7 +284,7 @@ def save_to_markdown(content: str, user_prompt: str) -> str:
 
 ---
 *Laporan ini dibuat secara otomatis oleh GitHub Actions.*
-*Pipeline: User Prompt → Gemini 1.5 Pro (Analisis) → Groq LLaMA3-70B (Humanize) → Humanize AI Service*
+*Pipeline: User Prompt → gemini-1.5-flash (Analisis) → Groq LLaMA3-70B (Humanize) → Humanize AI Service*
 """
     with open(filename, "w", encoding="utf-8") as f:
         f.write(markdown)
@@ -299,7 +299,7 @@ def main():
     log.info("═══ Memulai pipeline analisis AI (Prompt-Driven Edition) ═══")
     log.info(f"Prompt diterima: \"{USER_PROMPT[:100]}...\"" if len(USER_PROMPT) > 100 else f"Prompt: \"{USER_PROMPT}\"")
 
-    # 1. Analisis mendalam dengan Gemini 1.5 Pro
+    # 1. Analisis mendalam dengan gemini-1.5-flash
     gemini_result = analyze_with_gemini(USER_PROMPT)
 
     # 2. Humanize hasil Gemini menggunakan Groq LLaMA3-70B
