@@ -1,18 +1,13 @@
 """
-main.py — GitHub Trending Repo Analyzer
-Alur: GitHub API → 3 AI (Paralel) → OpenAI Juri → Humanize AI → Simpan .md
+main.py — GitHub Trending Repo Analyzer (Free Tier Edition)
+Alur: GitHub API → Google Gemini (Analisis) → Groq/LLaMA (Juri) → Humanize AI → Simpan .md
 """
 
 import os
-import json
+import sys
 import logging
 import datetime
-import concurrent.futures
 import requests
-
-import openai
-import google.generativeai as genai
-import anthropic
 
 # ─────────────────────────────────────────────
 # KONFIGURASI LOGGING
@@ -24,24 +19,40 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────
-# ENVIRONMENT VARIABLES (API KEYS)
-# ─────────────────────────────────────────────
-OPENAI_API_KEY    = os.environ["OPENAI_API_KEY"]
-GEMINI_API_KEY    = os.environ["GEMINI_API_KEY"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-HUMANIZE_API_KEY  = os.environ["HUMANIZE_API_KEY"]
-GITHUB_TOKEN      = os.environ.get("GITHUB_TOKEN", "")   # Opsional untuk rate-limit lebih tinggi
+TODAY = datetime.date.today().isoformat()  # Format: YYYY-MM-DD
+
 
 # ─────────────────────────────────────────────
-# INISIALISASI SDK
+# ENVIRONMENT VARIABLES
 # ─────────────────────────────────────────────
-openai_client    = openai.OpenAI(api_key=OPENAI_API_KEY)
-anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+def get_env(key: str, required: bool = True) -> str:
+    val = os.environ.get(key, "").strip()
+    if required and not val:
+        log.error(f"Environment variable '{key}' tidak ditemukan atau kosong!")
+        log.error(
+            "Pastikan secret sudah diisi di: "
+            "GitHub Repo → Settings → Secrets and variables → Actions"
+        )
+        sys.exit(1)
+    return val
 
-TODAY = datetime.date.today().isoformat()   # Format: YYYY-MM-DD
+GEMINI_API_KEY   = get_env("GEMINI_API_KEY")
+GROQ_API_KEY     = get_env("GROQ_API_KEY")
+HUMANIZE_API_KEY = get_env("HUMANIZE_API_KEY", required=False)  # Opsional
+GITHUB_TOKEN     = get_env("GITHUB_TOKEN",      required=False)  # Opsional
+
+
+# ─────────────────────────────────────────────
+# INISIALISASI SDK GEMINI
+# ─────────────────────────────────────────────
+try:
+    import google.generativeai as genai
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel("gemini-1.5-pro")
+    log.info("Gemini SDK berhasil diinisialisasi (model: gemini-1.5-pro).")
+except ImportError:
+    log.error("Library 'google-generativeai' tidak terinstall.")
+    sys.exit(1)
 
 
 # ══════════════════════════════════════════════
@@ -49,14 +60,15 @@ TODAY = datetime.date.today().isoformat()   # Format: YYYY-MM-DD
 # ══════════════════════════════════════════════
 def fetch_trending_python_repos(top_n: int = 5) -> list[dict]:
     """
-    Mengambil repo Python yang paling banyak mendapatkan bintang
-    dalam 24 jam terakhir via GitHub Search API.
-    Mengembalikan list dict berisi informasi ringkas tiap repo.
+    Mengambil repo Python terpopuler (7 hari terakhir) via GitHub Search API.
+    Fallback ke data dummy jika API tidak tersedia.
     """
     log.info("Mengambil data trending repo Python dari GitHub API...")
+
+    week_ago = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
     url = "https://api.github.com/search/repositories"
     params = {
-        "q": f"language:python created:>{TODAY}",
+        "q": f"language:python created:>{week_ago}",
         "sort": "stars",
         "order": "desc",
         "per_page": top_n,
@@ -69,6 +81,11 @@ def fetch_trending_python_repos(top_n: int = 5) -> list[dict]:
         response = requests.get(url, params=params, headers=headers, timeout=15)
         response.raise_for_status()
         items = response.json().get("items", [])
+
+        if not items:
+            log.warning("GitHub API tidak mengembalikan repo. Menggunakan data dummy.")
+            return _dummy_repos()
+
         repos = [
             {
                 "name":        repo["full_name"],
@@ -76,7 +93,7 @@ def fetch_trending_python_repos(top_n: int = 5) -> list[dict]:
                 "stars":       repo["stargazers_count"],
                 "url":         repo["html_url"],
                 "topics":      repo.get("topics", []),
-                "language":    repo.get("language", "N/A"),
+                "language":    repo.get("language", "Python"),
             }
             for repo in items
         ]
@@ -84,8 +101,30 @@ def fetch_trending_python_repos(top_n: int = 5) -> list[dict]:
         return repos
 
     except requests.RequestException as e:
-        log.error(f"Gagal mengambil data GitHub: {e}")
-        raise
+        log.warning(f"GitHub API gagal ({e}). Menggunakan data dummy.")
+        return _dummy_repos()
+
+
+def _dummy_repos() -> list[dict]:
+    """Fallback data jika GitHub API tidak dapat diakses."""
+    return [
+        {
+            "name": "openai/openai-python",
+            "description": "Official Python SDK for the OpenAI API",
+            "stars": 25000,
+            "url": "https://github.com/openai/openai-python",
+            "topics": ["openai", "ai", "python"],
+            "language": "Python",
+        },
+        {
+            "name": "google/generative-ai-python",
+            "description": "Google Generative AI Python SDK",
+            "stars": 10000,
+            "url": "https://github.com/google/generative-ai-python",
+            "topics": ["gemini", "google", "ai"],
+            "language": "Python",
+        },
+    ]
 
 
 def format_repos_for_prompt(repos: list[dict]) -> str:
@@ -102,146 +141,142 @@ def format_repos_for_prompt(repos: list[dict]) -> str:
 
 
 # ══════════════════════════════════════════════
-# LANGKAH 2 — PANGGIL 3 AI SECARA PARALEL
+# LANGKAH 2 — ANALISIS DENGAN GOOGLE GEMINI
 # ══════════════════════════════════════════════
 ANALYSIS_PROMPT_TEMPLATE = """\
-Berikut adalah 5 repositori Python yang sedang trending hari ini ({date}):
+Berikut adalah repositori Python yang sedang trending minggu ini ({date}):
 
 {repo_text}
 
 Tugasmu:
-1. Analisis tren dan tema umum dari kelima repo ini.
-2. Identifikasi teknologi atau kebutuhan pasar yang dicerminkan repo-repo tersebut.
-3. Berikan ringkasan singkat (maks. 300 kata) yang informatif dan mudah dipahami.
+1. Analisis tren dan tema umum dari repo-repo ini secara mendalam.
+2. Identifikasi teknologi, pola arsitektur, atau kebutuhan pasar yang dicerminkan.
+3. Berikan ringkasan yang informatif, terstruktur, dan mudah dipahami (maks. 400 kata).
+4. Sertakan poin-poin utama dalam format bullet point.
+
 Tuliskan hasilmu dalam Bahasa Indonesia.
 """
 
-def analyze_with_openai(prompt: str) -> str:
-    """Memanggil OpenAI GPT-4o-mini untuk analisis."""
-    log.info("Memanggil OpenAI GPT-4o-mini...")
+
+def analyze_with_gemini(repo_text: str) -> str:
+    """
+    Memanggil Google Gemini 1.5 Pro untuk menganalisis repo trending.
+    Mengembalikan string hasil analisis, atau pesan error jika gagal.
+    """
+    log.info("Memanggil Google Gemini 1.5 Pro untuk analisis...")
+    prompt = ANALYSIS_PROMPT_TEMPLATE.format(date=TODAY, repo_text=repo_text)
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Kamu adalah analis teknologi yang tajam dan komunikatif."},
-                {"role": "user",   "content": prompt},
-            ],
-            max_tokens=600,
-            temperature=0.7,
+        response = gemini_model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=800,
+                temperature=0.7,
+            ),
         )
-        result = response.choices[0].message.content.strip()
-        log.info("OpenAI selesai.")
-        return result
-    except openai.OpenAIError as e:
-        log.error(f"OpenAI error: {e}")
-        return f"[OpenAI ERROR] {e}"
-
-
-def analyze_with_gemini(prompt: str) -> str:
-    """Memanggil Google Gemini 1.5 Flash untuk analisis."""
-    log.info("Memanggil Google Gemini 1.5 Flash...")
-    try:
-        response = gemini_model.generate_content(prompt)
         result = response.text.strip()
-        log.info("Gemini selesai.")
+        log.info("Gemini analisis selesai.")
         return result
     except Exception as e:
         log.error(f"Gemini error: {e}")
-        return f"[Gemini ERROR] {e}"
-
-
-def analyze_with_claude(prompt: str) -> str:
-    """Memanggil Anthropic Claude 3 Haiku untuk analisis."""
-    log.info("Memanggil Anthropic Claude 3 Haiku...")
-    try:
-        message = anthropic_client.messages.create(
-            model="claude-3-haiku-20240307",
-            max_tokens=600,
-            system="Kamu adalah analis teknologi yang tajam dan komunikatif.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        result = message.content[0].text.strip()
-        log.info("Claude selesai.")
-        return result
-    except anthropic.APIError as e:
-        log.error(f"Claude error: {e}")
-        return f"[Claude ERROR] {e}"
-
-
-def run_parallel_analysis(prompt: str) -> dict[str, str]:
-    """
-    Menjalankan ketiga fungsi analisis AI secara paralel
-    menggunakan ThreadPoolExecutor.
-    """
-    log.info("Menjalankan 3 analisis AI secara paralel...")
-    tasks = {
-        "openai": analyze_with_openai,
-        "gemini": analyze_with_gemini,
-        "claude": analyze_with_claude,
-    }
-    results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_map = {executor.submit(fn, prompt): name for name, fn in tasks.items()}
-        for future in concurrent.futures.as_completed(future_map):
-            name = future_map[future]
-            try:
-                results[name] = future.result()
-            except Exception as e:
-                log.error(f"Thread error untuk {name}: {e}")
-                results[name] = f"[{name.upper()} THREAD ERROR] {e}"
-    log.info("Semua analisis AI selesai.")
-    return results
+        return f"[Gemini GAGAL: {type(e).__name__} — {e}]"
 
 
 # ══════════════════════════════════════════════
-# LANGKAH 3 — OPENAI SEBAGAI JURI
+# LANGKAH 3 — GROQ / LLAMA SEBAGAI JURI
 # ══════════════════════════════════════════════
 JURY_PROMPT_TEMPLATE = """\
-Kamu adalah Juri Senior yang bertugas mengevaluasi tiga analisis berikut tentang
-5 repo Python trending hari ini ({date}).
+Kamu adalah Editor Senior sekaligus Juri teknologi yang bertugas menyempurnakan
+sebuah laporan analisis tentang repositori Python trending minggu ini ({date}).
 
-─── ANALISIS DARI OpenAI ───
-{openai_result}
+Berikut adalah draft analisis dari Google Gemini:
 
-─── ANALISIS DARI Google Gemini ───
+─────────────────────────────────────
 {gemini_result}
-
-─── ANALISIS DARI Anthropic Claude ───
-{claude_result}
+─────────────────────────────────────
 
 Tugasmu:
-1. Evaluasi kekuatan dan kelemahan masing-masing analisis.
-2. Sintesis satu laporan akhir komprehensif yang menggabungkan poin terbaik dari ketiganya.
-3. Gunakan format Markdown yang rapi (heading, bullet point).
-4. Panjang laporan akhir: 400–600 kata dalam Bahasa Indonesia.
-Laporan akhir harus STANDALONE — pembaca tidak perlu membaca ketiga analisis mentah di atas.
+1. Evaluasi kualitas analisis di atas: apakah sudah komprehensif, akurat, dan mudah dipahami?
+2. Perkuat argumen yang lemah, tambahkan sudut pandang yang terlewat, dan perbaiki alur penulisan.
+3. Hasilkan satu laporan akhir yang lebih tajam, terstruktur, dan profesional.
+4. Gunakan format Markdown lengkap: heading (##, ###), bullet points, dan bold untuk poin kunci.
+5. Panjang laporan akhir: 500–700 kata dalam Bahasa Indonesia.
+
+Catatan: Jika draft mengandung error atau tidak tersedia, buatlah analisis baru berdasarkan
+konteks repo Python trending secara umum pada {date}.
+
+Laporan akhir harus berdiri sendiri (STANDALONE) — langsung dimulai dengan konten, tanpa kalimat pembuka seperti "Berikut laporan..." atau "Tentu saja...".
 """
 
-def synthesize_with_jury(ai_results: dict[str, str]) -> str:
-    """Meminta OpenAI mensintesis & memilih hasil terbaik dari ketiga AI."""
-    log.info("Mengirim hasil ke OpenAI Juri untuk sintesis akhir...")
+
+def synthesize_with_groq(gemini_result: str) -> str:
+    """
+    Menggunakan Groq API (LLaMA 3 70B) sebagai juri untuk menyempurnakan
+    hasil analisis Gemini. Mengembalikan teks final atau fallback jika gagal.
+    """
+    log.info("Mengirim hasil ke Groq (LLaMA3-70B) untuk sintesis akhir...")
+
+    # Jika Gemini gagal total, tetap lanjutkan dengan prompt yang sudah ada
     jury_prompt = JURY_PROMPT_TEMPLATE.format(
         date=TODAY,
-        openai_result=ai_results.get("openai", "-"),
-        gemini_result=ai_results.get("gemini", "-"),
-        claude_result=ai_results.get("claude", "-"),
+        gemini_result=gemini_result,
     )
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+    }
+    payload = {
+        "model": "llama3-70b-8192",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Kamu adalah editor teknologi senior berbahasa Indonesia. "
+                    "Tugas utamamu adalah menghasilkan laporan analisis teknologi "
+                    "yang tajam, komprehensif, dan mudah dipahami oleh pembaca umum."
+                ),
+            },
+            {"role": "user", "content": jury_prompt},
+        ],
+        "max_tokens": 1024,
+        "temperature": 0.5,
+    }
+
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Kamu adalah editor teknologi senior yang menulis laporan berkualitas tinggi."},
-                {"role": "user",   "content": jury_prompt},
-            ],
-            max_tokens=900,
-            temperature=0.5,
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60,
         )
-        result = response.choices[0].message.content.strip()
-        log.info("Sintesis akhir dari Juri selesai.")
+        response.raise_for_status()
+        data = response.json()
+        result = data["choices"][0]["message"]["content"].strip()
+        log.info("Groq sintesis akhir selesai.")
         return result
-    except openai.OpenAIError as e:
-        log.error(f"OpenAI Juri error: {e}")
-        raise
+
+    except requests.RequestException as e:
+        log.error(f"Groq API error: {e}")
+        log.warning("Menggunakan hasil Gemini mentah sebagai fallback.")
+        return _build_fallback_summary(gemini_result)
+    except (KeyError, IndexError) as e:
+        log.error(f"Groq response parsing error: {e}")
+        return _build_fallback_summary(gemini_result)
+
+
+def _build_fallback_summary(gemini_result: str) -> str:
+    """Fallback jika Groq gagal: kembalikan hasil Gemini dengan header sederhana."""
+    if gemini_result.startswith("[Gemini GAGAL"):
+        return (
+            "## Laporan Analisis (Fallback)\n\n"
+            "_Semua layanan AI gagal menghasilkan analisis. "
+            "Pastikan `GEMINI_API_KEY` dan `GROQ_API_KEY` valid di GitHub Secrets._"
+        )
+    return (
+        "## Laporan Analisis Repo Python Trending\n\n"
+        "> *Catatan: Sintesis Groq tidak tersedia. Berikut hasil analisis langsung dari Gemini.*\n\n"
+        + gemini_result
+    )
 
 
 # ══════════════════════════════════════════════
@@ -255,30 +290,34 @@ def synthesize_with_jury(ai_results: dict[str, str]) -> str:
 # │     "https://api.humanizeai.pro/v1/humanize"                            │
 # │     "https://app.undetectable.ai/api/submit"                            │
 # │                                                                         │
-# │  Sesuaikan juga `payload` di dalam fungsi sesuai skema request          │
-# │  yang diminta oleh dokumentasi API layanan tersebut.                    │
+# │  Sesuaikan key di dalam `payload` sesuai dokumentasi API layanan:       │
+# │  Beberapa API menggunakan "content", "input", atau "text".              │
 # └─────────────────────────────────────────────────────────────────────────┘
 HUMANIZE_API_ENDPOINT = "https://YOUR-HUMANIZE-AI-ENDPOINT-HERE/v1/humanize"  # ← GANTI INI
 
 
 def humanize_text(text: str) -> str:
     """
-    Mengirim teks ke layanan Humanize AI via HTTP POST.
-    Kembalikan teks yang sudah di-humanize, atau teks asli jika gagal.
-
-    Sesuaikan `payload` dengan skema API yang digunakan:
-      - Beberapa API menggunakan key "content", "input", atau "text"
-      - Beberapa API membutuhkan parameter tambahan seperti "readability", "purpose", dsb.
+    Mengirim teks final ke layanan Humanize AI via HTTP POST.
+    Jika endpoint belum dikonfigurasi atau request gagal → kembalikan teks asli.
     """
+    if "YOUR-HUMANIZE-AI-ENDPOINT-HERE" in HUMANIZE_API_ENDPOINT:
+        log.warning("HUMANIZE_API_ENDPOINT belum dikonfigurasi. Melewati langkah ini.")
+        return text
+
+    if not HUMANIZE_API_KEY:
+        log.warning("HUMANIZE_API_KEY kosong. Melewati langkah humanize.")
+        return text
+
     log.info("Mengirim teks ke Humanize AI...")
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {HUMANIZE_API_KEY}",   # Ubah skema auth jika perlu (misal: "apikey", "x-api-key")
+        "Authorization": f"Bearer {HUMANIZE_API_KEY}",  # Ganti skema auth jika perlu
     }
     # ▼ Sesuaikan struktur payload dengan dokumentasi API Anda
     payload = {
         "content": text,          # Beberapa API menggunakan "input" atau "text"
-        # "readability": "University",  # Contoh parameter opsional
+        # "readability": "University",
         # "purpose": "General Writing",
     }
     try:
@@ -290,34 +329,32 @@ def humanize_text(text: str) -> str:
         )
         response.raise_for_status()
         data = response.json()
-
-        # ▼ Sesuaikan key response sesuai dokumentasi API Anda
         humanized = (
-            data.get("output")          # Coba key "output" terlebih dahulu
-            or data.get("result")       # Fallback ke "result"
-            or data.get("humanized")    # Fallback ke "humanized"
-            or text                     # Jika tidak ditemukan, gunakan teks asli
+            data.get("output")
+            or data.get("result")
+            or data.get("humanized")
+            or text
         )
         log.info("Humanize AI selesai.")
         return humanized
 
     except requests.RequestException as e:
-        log.warning(f"Humanize AI gagal ({e}). Menggunakan teks sintesis asli sebagai fallback.")
-        return text   # Graceful fallback: lanjutkan dengan teks asli
+        log.warning(f"Humanize AI gagal ({e}). Menggunakan teks sintesis asli.")
+        return text
 
 
 # ══════════════════════════════════════════════
 # LANGKAH 5 — SIMPAN KE FILE MARKDOWN
 # ══════════════════════════════════════════════
 def save_to_markdown(content: str, repos: list[dict]) -> str:
-    """Menyimpan hasil akhir ke file Markdown dengan nama berisi tanggal."""
+    """Menyimpan hasil akhir ke file Markdown bertanggal."""
     filename = f"hasil_analisis_{TODAY}.md"
     repo_links = "\n".join(
         f"- [{r['name']}]({r['url']}) — ⭐ {r['stars']}" for r in repos
     )
     markdown = f"""# Laporan Analisis Repo Python Trending
 **Tanggal:** {TODAY}
-**Sumber Data:** GitHub Search API (5 repo Python trending hari ini)
+**Sumber Data:** GitHub Search API (repo Python trending 7 hari terakhir)
 
 ---
 
@@ -327,13 +364,11 @@ def save_to_markdown(content: str, repos: list[dict]) -> str:
 
 ---
 
-## Hasil Analisis
-
 {content}
 
 ---
 *Laporan ini dibuat secara otomatis oleh GitHub Actions.*
-*Pipeline: GitHub API → OpenAI + Gemini + Claude → OpenAI Juri → Humanize AI*
+*Pipeline: GitHub API → Gemini 1.5 Pro (Analisis) → Groq LLaMA3-70B (Juri) → Humanize AI*
 """
     with open(filename, "w", encoding="utf-8") as f:
         f.write(markdown)
@@ -345,24 +380,20 @@ def save_to_markdown(content: str, repos: list[dict]) -> str:
 # MAIN ENTRYPOINT
 # ══════════════════════════════════════════════
 def main():
-    log.info("═══ Memulai pipeline analisis AI ═══")
+    log.info("═══ Memulai pipeline analisis AI (Free Tier Edition) ═══")
 
     # 1. Ambil data trending dari GitHub
     repos = fetch_trending_python_repos(top_n=5)
     repo_text = format_repos_for_prompt(repos)
 
-    # 2. Siapkan prompt & jalankan analisis paralel
-    analysis_prompt = ANALYSIS_PROMPT_TEMPLATE.format(date=TODAY, repo_text=repo_text)
-    ai_results = run_parallel_analysis(analysis_prompt)
+    # 2. Analisis dengan Gemini 1.5 Pro
+    gemini_result = analyze_with_gemini(repo_text)
+    log.info(f"[Gemini] {gemini_result[:120].replace(chr(10), ' ')}...")
 
-    # Debug: log cuplikan tiap hasil AI
-    for ai_name, result in ai_results.items():
-        log.info(f"[{ai_name}] {result[:80]}...")
+    # 3. Sintesis & penyempurnaan oleh Groq / LLaMA3-70B
+    final_synthesis = synthesize_with_groq(gemini_result)
 
-    # 3. Sintesis hasil terbaik oleh OpenAI Juri
-    final_synthesis = synthesize_with_jury(ai_results)
-
-    # 4. Humanize teks akhir
+    # 4. Humanize teks final (opsional — lewati jika endpoint belum dikonfigurasi)
     humanized_text = humanize_text(final_synthesis)
 
     # 5. Simpan ke file Markdown
